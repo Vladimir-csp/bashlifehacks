@@ -1,0 +1,38 @@
+#!/bin/bash
+# Single-color themes recolorizer
+# by Vladimir Kudrya
+# https://github.com/Vladimir-csp/
+#
+# This script is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version. See <http://www.gnu.org/licenses/>.
+
+# Dumb recolorizer for single-colored themes, example for Numix theme is provided.
+
+recolor(){
+
+	THEME_PATH="$1"
+	ORIG_COLOR="$2"
+	SUFFIX="$3"
+	COLOR="$4"
+
+	[ ! -d "$THEME_PATH" ] && { echo "Theme path should be a directory!" >&2 ; return 1 ; }
+	echo "$ORIG_COLOR" | grep -qi '#[0-f]\{6\}' || { echo "Original color not recognized, use #000000 format." >&2 ; return 1 ; }
+	[ -z "$SUFFIX" ] && { echo "Name suffix can not be empty!" >&2 ; return 1 ; }
+	echo "$COLOR" | grep -qi '#[0-f]\{6\}' || { echo "Target color not recognized, use #000000 format." >&2 ; return 1 ; }
+
+
+	[ -d "$THEME_PATH $SUFFIX" ] && { echo "Replacing \"Iris $SUFFIX\"" ; rm "$THEME_PATH $SUFFIX" -r ; }
+	echo "Colorizing \"$(basename "$THEME_PATH") $SUFFIX\" with $COLOR"
+	cp -a "$(readlink -f "$THEME_PATH")" "$THEME_PATH $SUFFIX"
+	find "$THEME_PATH $SUFFIX" -type f -exec sed -i "s/$ORIG_COLOR/$COLOR/gI" "{}" \;
+
+}
+
+TH="/usr/share/themes/Numix"
+OC="#d64937"
+
+recolor "$TH" "$OC" Coffee '#6F4E37'
+recolor "$TH" "$OC" Blue '#527ead'
+recolor "$TH" "$OC" Gray '#868686'
