@@ -1,0 +1,115 @@
+#!/bin/bash
+# ipodexport
+# BASH frontend to GNUpod utils
+
+# by Vladimir Kudrya
+# https://github.com/Vladimir-csp/
+#
+# This script is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version. See <http://www.gnu.org/licenses/>.
+
+# Script is designed to be used with music players, i.e. gmusicbrowser
+# to provide batch background export to ipod
+
+# show help
+if [ "$#" -le "1" -o "$1" = "-h" -o "$1" = "--help" ]
+then
+	echo "Usage:
+	$(basename "$0") ipod_mountpoint files
+
+Example:
+	$(basename "$0") /media/my_ipod /home/user/music/lalala.mp3 /home/user/music/tadada.flac
+
+Script automatically enables conversion to mp3 for files which are not mp3.
+Result is reported via libnotify"
+	exit 0
+fi
+
+export IPOD_MOUNTPOINT="$1"
+shift
+
+export PIDFILE="/tmp/ipodexport-${USER}.pid"
+export LOGFILE="/tmp/gnupod.log"
+
+[ ! -d "$IPOD_MOUNTPOINT" ] && { echo "Bad iPod mountpoint \"$IPOD_MOUNTPOINT\", aborting!" >&2 ; notify-send -a ipodexport -u critical "iPod export $$" "Bad iPod mountpoint \"$IPOD_MOUNTPOINT\", aborting!" ; exit 1 ; }
+
+# wait for other process to finish adding, then claim pidfile
+while true ; do
+	# if known other process is running, wait
+	if [ -e "$PIDFILE" ] && OTHERPID=$(cat "$PIDFILE" 2> /dev/null) && kill -0 $(cat "$PIDFILE" 2> /dev/null) &> /dev/null
+	then
+		# if that process is us, proceed
+		[ "$$" = "$OTHERPID" ] && break
+		# tell which session we are waiting on start, or if pid changed
+		[ "$OLDOTHERPID" != "$OTHERPID" ] && { echo "Waiting for $OTHERPID to exit..." ; notify-send -a ipodexport "iPod export $$" "Waiting for $OTHERPID to finish..." ; }
+		# failsafe, if other process touched pidfile 10 minutes ago and still running
+		[ "$(( $(date +%s) - $(stat -c %Y "$PIDFILE") ))" -ge "600" ] && { echo "Session $OTHERPID is running too long, check it! Aborting!" >&2 ; notify-send -a ipodexport -u critical "iPod export $$" "Session $OTHERPID is running too long, check it! Aborting!" ; exit 1 ; }
+		OLDOTHERPID=$OTHERPID
+	else
+		# claim lock
+		echo $$ > "$PIDFILE" || { echo "Can not write pidfile \"$PIDFILE\"!" >&2  ; notify-send -a ipodexport -u critical "iPod export $$" "Can not write pidfile \"$PIDFILE\"" ; exit 1 ; }
+	fi
+	sleep .5
+done
+
+echo "Export session started, pid $$." | tee -a  "$LOGFILE"
+notify-send -a ipodexport "iPod export $$" "GNUpod export session started."
+
+echo "Updating GNUpod database from itunes database..."
+tunes2pod &>>  "$LOGFILE" && echo "GNUpod database updated." || echo "GNUpod database was not updated, may be up to date."
+
+echo "Adding mp3 files:" | tee -a  "$LOGFILE"
+for FILE in "$@"
+do
+	echo "$FILE" | grep -qi '.mp3$' || continue
+	echo "$FILE"
+	MP3FILES=( "${MP3FILES[@]}" "$FILE" )
+done
+
+if [ -n "$MP3FILES" ]
+then
+	gnupod_addsong "${MP3FILES[@]}" &>> "$LOGFILE" && echo "mp3 files added successfully." || { echo "Error on adding mp3 files, see \"$LOGFILE\"" >&2 ; ADD=e ; }
+else
+	echo "No files"
+fi
+
+echo "Adding non-mp3 files:" | tee -a  "$LOGFILE"
+for FILE in "$@"
+do
+	echo "$FILE" | grep -qi '.mp3$' && continue
+	echo "$FILE"
+	NONMP3FILES=( "${NONMP3FILES[@]}" "$FILE" )
+done
+
+if [ -n "$NONMP3FILES" ]
+then
+	gnupod_addsong "${NONMP3FILES[@]}" --decode=mp3 -e 0 &>> "$LOGFILE" && echo "Non-mp3 files added successfully." || { echo "Error on adding non-mp3 files, see \"$LOGFILE\"" >&2 ; ADD=e ; }
+else
+	echo "No files"
+fi
+
+echo "Finalizing ipod..." | tee -a  "$LOGFILE"
+mktunes  &>> "$LOGFILE" && echo "Finalization successful." || { echo "Finalization went with errors!" >&2 ; FIN=e ; }
+
+echo "Checking consistency..." | tee -a  "$LOGFILE"
+gnupod_check &>> "$LOGFILE"  && echo "Check successful." || { echo "Consistency check went with errors!" >&2 ; CON=e ; }
+
+if [ "$CON" = "e" ]
+then
+	echo "Fixing iPod structure..." | tee -a  "$LOGFILE"
+	gnupod_check --fixit &>> "$LOGFILE"  && echo "Fix successful." || { echo "Fix went with errors!" >&2 ; FIX=e ; }
+fi
+
+EXTMSG="Track export: 	$([ "$ADD" != "e" ] && echo success || echo fail)
+Finalization: 	$([ "$FIN" != "e" ] && echo success || echo fail)
+Consistency: 	$([ "$CON" != "e" ] && echo success || echo $([ "$FIX" != "e" ] && echo fixed || echo fail))"
+
+echo $EXTMSG | grep -q fail && URG=critical || URG=normal
+echo $EXTMSG | grep -q fail && echo "$EXTMSG" >&2 || echo "$EXTMSG"
+
+notify-send -a ipodexport -u $URG "iPod export $$" "GNUpod export session ended:
+$EXTMSG"
+
+rm "$PIDFILE"
