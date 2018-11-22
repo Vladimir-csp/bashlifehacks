@@ -1,0 +1,45 @@
+#!/bin/sh
+# restart dbus service and its dependencies.
+# either run via at or systemd-run
+# e.g.:
+# echo /path/to/restart-dbus | sudo at now
+
+get_active_deps(){
+	# return all dbus dependencies, filter out dbus and DM, leave only active
+	{
+		systemctl list-dependencies -l --reverse --plain dbus.socket
+		systemctl list-dependencies -l --reverse --plain dbus.service
+	} | grep -o '[^[:space:]]\+.service' | sort -u | while read SERVICE
+	do
+		if [ "$SERVICE" != "dbus.service" -a "$SERVICE" != "$DISPLAY_MANAGER" ] && systemctl -q is-active "$SERVICE"
+		then
+			echo "$SERVICE"
+		fi
+	done
+}
+
+# if DM is active, return canonical ID
+DISPLAY_MANAGER="$(systemctl -q is-active display-manager.service && systemctl show --value -p Id display-manager.service)"
+ACTIVE_DEPS="$(get_active_deps)"
+SESSIONS="$(loginctl list-sessions --no-legend | grep -o '^[[:space:]]*[0-9]\+')"
+
+echo "Display manager: $DISPLAY_MANAGER"
+echo
+echo "Sessions to be terminated:"
+echo "$SESSIONS"
+echo
+echo "Services to be restarted:"
+echo "$ACTIVE_DEPS"
+
+# terminate user sessions
+loginctl terminate-session $SESSIONS
+
+# stop DM if it is started
+[ -n "$DISPLAY_MANAGER" ] && systemctl stop "$DISPLAY_MANAGER"
+
+systemctl restart dbus.service
+systemctl daemon-reexec
+systemctl restart $ACTIVE_DEPS
+
+# start DM if it was started
+[ -n "$DISPLAY_MANAGER" ] && systemctl start "$DISPLAY_MANAGER"
