@@ -1,0 +1,99 @@
+#!/bin/sh
+
+# Make WINE Desktop Entry
+# Generates Desktop Entry to launch windows executable in WINE
+# Accounts for WINEPREFIX (and can find it automatically)
+#
+# by Vladimir Kudrya
+# https://github.com/Vladimir-csp/
+#
+# This script is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version. See <http://www.gnu.org/licenses/>.
+
+if [ "$1" = "-h" -o "$1" = "--help" -o "$1" = "help" -o -z "$1" ]
+then
+	cat << EOF
+Usage: $(basename "$0") executable [install] [edit]
+  executable - windows executable to work on
+  install    - place desktop entry to user's XDG data path
+               (isntead of current dir)
+  edit       - edit desktop entry after creation
+
+  WINEPREFIX is determined automatically if not set,
+             defaults to \$HOME/.wine if not found
+EOF
+	exit 0
+fi
+
+EXECUTABLE="$(realpath -se "$1")"
+[ "$?" != "0" ] && exit 1
+shift
+
+if [ -z "${WINEPREFIX}" ]
+then
+	# find wineprefix by searching characteristic files up the heirarchy
+	FINDPATH="$(dirname "${EXECUTABLE}")"
+	COUNT=30
+	while [ -z "${WINEPREFIX}" -a "${FINDPATH}" != "/" -a "${COUNT}" -gt "0" ]
+	do
+		if [ -n "$(find "${FINDPATH}" -mindepth 1 -maxdepth 1 -type f -name system.reg)" -a -n "$(find "${FINDPATH}" -mindepth 1 -maxdepth 1 -type f -name user.reg)" -a -n "$(find "${FINDPATH}" -mindepth 1 -maxdepth 1 -type d -name drive_c)" ]
+		then
+			WINEPREFIX="${FINDPATH}"
+		else
+			FINDPATH="$(dirname "${FINDPATH}")"
+			COUNT=$(( ${COUNT} - 1 ))
+		fi
+	done
+fi
+
+[ -z "${WINEPREFIX}" ] && WINEPREFIX="${HOME}/.wine"
+
+echo "Using WINEPREFIX=${WINEPREFIX}"
+
+if echo "$@" | grep -wq "install"
+then
+	GENPATH="${XDG_DATA_HOME:-${HOME}/.local/share}/applications"
+	mkdir -p "$GENPATH"
+else
+	GENPATH="."
+fi
+EXPORTFILE="${GENPATH}/$(basename "$EXECUTABLE" | sed 's/\.[^.]\+$//').desktop"
+
+echo "Will generate ${EXPORTFILE}"
+
+if which exiftool >/dev/null 2>/dev/null
+then
+	echo "Extracting product name from executable..."
+	APPNAME="$(exiftool Dishonored.exe | grep '^Product Name\s\+:' | sed 's/^[^:]\+\s\+: //')"
+fi
+
+[ -z "${APPNAME}" ] && APPNAME="$(basename "${EXECUTABLE}")"
+
+echo "Using name ${APPNAME}"
+
+cat > "${EXPORTFILE}" << EOF
+[Desktop Entry]
+Name=${APPNAME}
+Exec=env WINEPREFIX="${WINEPREFIX}" wine "${EXECUTABLE}"
+Type=Application
+StartupNotify=true
+Path=$(dirname "${EXECUTABLE}")
+Icon=wine
+#Categories=;
+EOF
+EC=$?
+[ "$EC" != "0" ] && { echo "Could not write file $(realpath -s "${EXPORTFILE}")" >&2 ; exit $EC ; }
+
+if echo "$@" | grep -qw "edit"
+then
+	if which sensible-editor >/dev/null 2>/dev/null
+	then
+		sensible-editor "${EXPORTFILE}"
+	else
+		"${EDITOR:-vi}" "${EXPORTFILE}"
+	fi
+else
+	true
+fi
