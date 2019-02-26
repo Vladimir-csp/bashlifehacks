@@ -7,10 +7,24 @@
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version. See <http://www.gnu.org/licenses/>.
 
-# restart dbus service and its dependencies.
-# either run via at or systemd-run
-# e.g.:
-# echo /path/to/restart-dbus | sudo at now
+# Restart dbus service and its dependencies.
+# Use with care
+
+PAUSE=5
+
+if [ "$(id -ru)" != "0" ]
+then
+	echo "Not root, exiting" >&2
+	exit 1
+fi
+
+INIT_EXEC="$(readlink /proc/1/exe)"
+
+if [ "$(basename "$INIT_EXEC")" != "systemd" ]
+then
+	echo "Init system is not systemd ($INIT_EXEC), doing nothing"
+	exit 0
+fi
 
 get_active_deps(){
 	# return all dbus dependencies, filter out dbus and DM, leave only active
@@ -29,25 +43,24 @@ get_active_deps(){
 # if DM is active, return canonical ID
 DISPLAY_MANAGER="$(systemctl -q is-active display-manager.service && systemctl show --value -p Id display-manager.service)"
 ACTIVE_DEPS="$(get_active_deps)"
-SESSIONS="$(loginctl list-sessions --no-legend | grep -o '^[[:space:]]*[0-9]\+')"
+SESSIONS="$(loginctl list-sessions --no-legend | grep -o '^[[:space:]]*[0-9]\+' | tr '\n' ' ')"
 
-echo "Display manager: $DISPLAY_MANAGER"
-echo
-echo "Sessions to be terminated:"
-echo "$SESSIONS"
-echo
-echo "Services to be restarted:"
-echo "$ACTIVE_DEPS"
+cat << EOF
+!!! In $PAUSE seconds dbus restart will be performed !!!
+User sessions to be terminated: $SESSIONS
 
-# terminate user sessions
-loginctl terminate-session $SESSIONS
+Services to be restarted:
+$ACTIVE_DEPS
+$DISPLAY_MANAGER
+EOF
 
-# stop DM if it is started
-[ -n "$DISPLAY_MANAGER" ] && systemctl stop "$DISPLAY_MANAGER"
+ACTIVE_DEPS="$(echo "$ACTIVE_DEPS" | tr '\n' ' ')"
 
-systemctl restart dbus.service
-systemctl daemon-reexec
-systemctl restart $ACTIVE_DEPS
+sleep $PAUSE
 
-# start DM if it was started
-[ -n "$DISPLAY_MANAGER" ] && systemctl start "$DISPLAY_MANAGER"
+if [ -n "$DISPLAY_MANAGER" ]
+then
+	systemd-run --unit=restart-dbus sh -c "loginctl terminate-session $SESSIONS ; systemctl stop $DISPLAY_MANAGER ; systemctl restart dbus.service ; systemctl daemon-reexec ; systemctl restart $ACTIVE_DEPS ; systemctl start $DISPLAY_MANAGER"
+else
+	systemd-run --unit=restart-dbus sh -c "loginctl terminate-session $SESSIONS ; systemctl restart dbus.service ; systemctl daemon-reexec ; systemctl restart $ACTIVE_DEPS"
+fi
