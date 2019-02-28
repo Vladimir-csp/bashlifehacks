@@ -42,7 +42,11 @@ get_active_deps(){
 
 # if DM is active, return canonical ID
 DISPLAY_MANAGER="$(systemctl -q is-active display-manager.service && systemctl show --value -p Id display-manager.service)"
+
+# get dependencies
 ACTIVE_DEPS="$(get_active_deps)"
+
+# get logind sessions
 SESSIONS="$(loginctl list-sessions --no-legend | grep -o '^[[:space:]]*[0-9]\+' | tr '\n' ' ')"
 
 cat << EOF
@@ -54,13 +58,17 @@ $ACTIVE_DEPS
 $DISPLAY_MANAGER
 EOF
 
+# prepare list to be a CLI arg
 ACTIVE_DEPS="$(echo "$ACTIVE_DEPS" | tr '\n' ' ')"
 
 sleep $PAUSE
 
+# run restart sequence as transient unit...
 if [ -n "$DISPLAY_MANAGER" ]
 then
+	# terminate user sessions, stop DM, restart dbus, reexec systemd, restart dbus dependencies, start DM
 	systemd-run --unit=restart-dbus sh -c "loginctl terminate-session $SESSIONS ; systemctl stop $DISPLAY_MANAGER ; systemctl restart dbus.service ; systemctl daemon-reexec ; systemctl restart $ACTIVE_DEPS ; systemctl start $DISPLAY_MANAGER"
 else
+	# terminate user sessions, restart dbus, reexec systemd, restart dbus dependencies
 	systemd-run --unit=restart-dbus sh -c "loginctl terminate-session $SESSIONS ; systemctl restart dbus.service ; systemctl daemon-reexec ; systemctl restart $ACTIVE_DEPS"
 fi
